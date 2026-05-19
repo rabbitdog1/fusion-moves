@@ -1,0 +1,5 @@
+==============================================================================
+--> Largest Connected Component  :   Nodes= 755    Edges= 5138
+--> Edge Correctness             :   0.999805
+--> Node Correctness             :   1
+--> Interaction Correctness      :   0.999805
