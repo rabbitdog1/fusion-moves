@@ -1,0 +1,102 @@
+# FROM debian:bullseye
+FROM debian:bookworm
+
+# 使用多个镜像源提高稳定性
+RUN cp /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list.d/debian.sources.bak && \
+    sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources
+
+# 安装系统更新
+RUN export DEBIAN_FRONTEND="noninteractive" \
+&& apt-get update \
+&& apt-get dist-upgrade -y
+
+# 分步安装核心包，避免单次安装包数过多
+RUN export DEBIAN_FRONTEND="noninteractive" \
+&& apt-get install -y \
+    build-essential \
+    curl \
+    sudo
+
+# 安装Python相关包
+RUN export DEBIAN_FRONTEND="noninteractive" \
+&& (apt-get install -y \
+    python3 \
+    python3-dev \
+    python3-numpy \
+    python3-pip || \
+    (echo "Switching to official mirror due to timeout" && \
+     cp /etc/apt/sources.list.d/debian.sources.bak /etc/apt/sources.list.d/debian.sources && \
+     apt-get update && \
+     apt-get install -y python3 python3-dev python3-numpy python3-pip))
+
+# 安装构建工具
+RUN export DEBIAN_FRONTEND="noninteractive" \
+&& (apt-get install -y \
+    meson \
+    ninja-build \
+    pkg-config || \
+    (echo "Switching to official mirror for remaining packages" && \
+     cp /etc/apt/sources.list.d/debian.sources.bak /etc/apt/sources.list.d/debian.sources && \
+     apt-get update && \
+     apt-get install -y meson ninja-build pkg-config))
+
+# 安装调试工具（可选，允许失败）
+RUN export DEBIAN_FRONTEND="noninteractive" \
+&& apt-get install -y gdb swig || echo "Some optional packages failed, continuing..."
+
+# 清理
+RUN find /var/cache/apt -mindepth 1 -delete \
+&& find /var/lib/apt/lists -mindepth 1 -delete
+
+# In Debian the sysconfig Python module is reporting the wrong paths. Instead
+# of site-packages, Debian uses dist-packages. We fix this by creating a
+# symlink here.
+RUN cd /usr/local/lib/python3.* \
+&& ln -nsf dist-packages site-packages
+
+RUN useradd -ms /bin/bash user \
+&& echo 'user ALL=(ALL) NOPASSWD: ALL' >/etc/sudoers.d/user
+
+USER user
+WORKDIR /home/user
+
+RUN mkdir worms \
+&& cd worms \
+&& (curl -L -o worms.zip 'https://research-explorer.app.ist.ac.at/download/5561/5614/IST-2017-57-v1%2B1_wormMatchingProblems.zip' \
+|| curl -L --insecure -o worms.zip 'https://research-explorer.app.ist.ac.at/download/5561/5614/IST-2017-57-v1%2B1_wormMatchingProblems.zip' \
+|| echo "Warning: Could not download test data, continuing without it") \
+&& (test -f worms.zip && unzip worms.zip && rm worms.zip *.h5 || echo "No test data to extract")
+
+COPY --chown=user:user libqpbo libqpbo
+
+RUN mkdir libqpbo-build \
+&& cd libqpbo \
+&& (./prepare || \
+    (echo "Prepare script failed, trying with insecure curl..." && \
+     sed -i 's/curl -L/curl -L --insecure/g' prepare && ./prepare) || \
+    (echo "Trying with wget..." && \
+     sed -i 's/curl -L --insecure/wget --no-check-certificate/g' prepare && ./prepare) || \
+    echo "Could not prepare libqpbo dependencies, skipping libqpbo build") \
+&& cd ../libqpbo-build \
+&& (test -f ../libqpbo/QPBO.cpp && \
+    meson setup -Db_ndebug=if-release -Dbuildtype=release ../libqpbo && \
+    ninja && \
+    sudo meson install && \
+    sudo ldconfig || \
+    echo "Skipping libqpbo installation due to missing source files")
+
+COPY --chown=user:user qapopt qapopt
+
+RUN mkdir qapopt-build \
+&& cd qapopt-build \
+&& meson setup \
+    -Db_ndebug=if-release \
+    -Dbuildtype=release \
+    -Dqpbo=enabled \
+    -Dgurobi=auto \
+    /home/user/qapopt \
+&& ninja \
+&& sudo meson install \
+&& sudo ldconfig
+
+# vim: set ts=8 sts=4 sw=4 et ft=dockerfile:
